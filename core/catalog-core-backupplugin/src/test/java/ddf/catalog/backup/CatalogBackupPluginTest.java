@@ -29,6 +29,7 @@ import ddf.catalog.operation.DeleteResponse;
 import ddf.catalog.operation.Update;
 import ddf.catalog.operation.UpdateResponse;
 import ddf.catalog.plugin.PluginExecutionException;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -40,6 +41,10 @@ import java.io.ObjectInputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -49,11 +54,11 @@ public class CatalogBackupPluginTest {
     @Rule
     public TemporaryFolder rootBackupDir = new TemporaryFolder();
 
-    private String[] METACARD_IDS = {"6c3810b98a3b4208b51bc0a96d61e5", "1b6482b1b8f730e343a96d61e0e089"};
+    private static String[] METACARD_IDS = {"6c3810b98a3b4208b51bc0a96d61e5", "1b6482b1b8f730e343a96d61e0e089"};
 
-    private String BASE_OLD_TITLE = "oldTitle";
+    private static String BASE_OLD_TITLE = "oldTitle";
 
-    private String BASE_NEW_TITLE = "newTitle";
+    private static String BASE_NEW_TITLE = "newTitle";
 
     /**
      * Verify no NullPointerException
@@ -76,6 +81,8 @@ public class CatalogBackupPluginTest {
 
         // Perform Test
         catalogBackupPlugin.process(mockCreateResponse);
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
     }
 
     @Test
@@ -92,10 +99,13 @@ public class CatalogBackupPluginTest {
         // Perform Test
         CreateResponse postPluginCreateResponse = catalogBackupPlugin.process(mockCreateResponse);
 
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+
         // Verify
         assertThat(postPluginCreateResponse, is(notNullValue()));
 
-        for(String metacardId : METACARD_IDS) {
+        for (String metacardId : METACARD_IDS) {
             File backedupMetacard = new File(rootBackupDir.getRoot().getAbsolutePath() + getMetacardPath(metacardId, 0) + metacardId);
             assertThat(backedupMetacard.exists(), is(Boolean.TRUE));
         }
@@ -115,10 +125,13 @@ public class CatalogBackupPluginTest {
         // Perform Test
         CreateResponse postPluginCreateResponse = catalogBackupPlugin.process(mockCreateResponse);
 
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+
         // Verify
         assertThat(postPluginCreateResponse, is(notNullValue()));
 
-        for(String metacardId : METACARD_IDS) {
+        for (String metacardId : METACARD_IDS) {
             File backedupMetacard = new File(rootBackupDir.getRoot().getAbsolutePath() + getMetacardPath(metacardId, 0) + metacardId);
             assertThat(backedupMetacard.exists(), is(Boolean.TRUE));
         }
@@ -144,10 +157,13 @@ public class CatalogBackupPluginTest {
         // Perform Test
         CreateResponse postPluginCreateResponse = catalogBackupPlugin.process(mockCreateResponse);
 
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+
         // Verify
         assertThat(postPluginCreateResponse, is(notNullValue()));
 
-        for(String metacardId : metacardIds) {
+        for (String metacardId : metacardIds) {
             File backedupMetacard = new File(rootBackupDir.getRoot().getAbsolutePath() + getMetacardPath(metacardId, 2) + metacardId);
             assertThat(backedupMetacard.exists(), is(Boolean.TRUE));
         }
@@ -167,10 +183,13 @@ public class CatalogBackupPluginTest {
         // Perform Test
         CreateResponse postPluginCreateResponse = catalogBackupPlugin.process(mockCreateResponse);
 
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+
         // Verify
         assertThat(postPluginCreateResponse, is(notNullValue()));
 
-        for(String metacardId : METACARD_IDS) {
+        for (String metacardId : METACARD_IDS) {
             File backedupMetacard = new File(rootBackupDir.getRoot().getAbsolutePath() + getMetacardPath(metacardId, 3) + metacardId);
             assertThat(backedupMetacard.exists(), is(Boolean.TRUE));
         }
@@ -190,14 +209,20 @@ public class CatalogBackupPluginTest {
         catalogBackupPlugin.setSubDirLevels(subDirLevels);
 
         catalogBackupPlugin.process(mockCreateResponse);
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+        catalogBackupPlugin.threadPool = Executors.newFixedThreadPool(10);
 
         // Perform Test
         DeleteResponse postPluginDeleteResponse = catalogBackupPlugin.process(mockDeleteResponse);
 
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+
         // Verify
         assertThat(postPluginDeleteResponse, is(notNullValue()));
 
-        for(String metacardId : METACARD_IDS) {
+        for (String metacardId : METACARD_IDS) {
             File deletedMetacards = new File(rootBackupDir.getRoot().getAbsolutePath() + getMetacardPath(metacardId, 3) + metacardId);
             assertThat(deletedMetacards.exists(), is(Boolean.FALSE));
         }
@@ -217,11 +242,15 @@ public class CatalogBackupPluginTest {
         // Perform Test
         try {
             catalogBackupPlugin.process(mockDeleteResponse);
-        } catch(PluginExecutionException e) {
+            catalogBackupPlugin.threadPool.shutdown();
+            catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+        } catch (PluginExecutionException e) {
             // Verify
-            for(int i = 0; i < METACARD_IDS.length; i++) {
+            for (int i = 0; i < METACARD_IDS.length; i++) {
                 assertThat(e.getMessage(), containsString(METACARD_IDS[i]));
             }
+        } catch (InterruptedException e) {
+            // threads interrupted
         }
     }
 
@@ -240,8 +269,13 @@ public class CatalogBackupPluginTest {
 
         try {
             catalogBackupPlugin.process(mockCreateResponse);
-        } catch(PluginExecutionException e) {
+            catalogBackupPlugin.threadPool.shutdown();
+            catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+            catalogBackupPlugin.threadPool = Executors.newFixedThreadPool(10);
+        } catch (PluginExecutionException e) {
             fail();
+        } catch (InterruptedException e) {
+            // thread interrupted
         }
 
         DeleteResponse mockDeleteResponse = getDeleteResponse(Arrays.asList(METACARD_IDS));
@@ -249,11 +283,15 @@ public class CatalogBackupPluginTest {
         try {
             // Perform Test
             catalogBackupPlugin.process(mockDeleteResponse);
-        } catch(PluginExecutionException e) {
+            catalogBackupPlugin.threadPool.shutdown();
+            catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+        } catch (PluginExecutionException e) {
             // Verify
-            for(int i = 1; i < METACARD_IDS.length; i++) {
+            for (int i = 1; i < METACARD_IDS.length; i++) {
                 assertThat(e.getMessage(), containsString(METACARD_IDS[i]));
             }
+        } catch (InterruptedException e) {
+            // threads interrupted
         }
     }
 
@@ -269,17 +307,23 @@ public class CatalogBackupPluginTest {
         catalogBackupPlugin.setSubDirLevels(subDirLevels);
 
         catalogBackupPlugin.process(mockCreateResponse);
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+        catalogBackupPlugin.threadPool = Executors.newFixedThreadPool(10);
 
         UpdateResponse mockUpdateResponse = getUpdateResponse(Arrays.asList(METACARD_IDS));
 
         // Perform Test
         UpdateResponse postPluginUpdateResponse = catalogBackupPlugin.process(mockUpdateResponse);
 
+        catalogBackupPlugin.threadPool.shutdown();
+        catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+
         // Verify
         assertThat(postPluginUpdateResponse, is(notNullValue()));
 
         int j = 0;
-        for(Metacard oldMetacard : mockCreateResponse.getCreatedMetacards()) {
+        for (Metacard oldMetacard : mockCreateResponse.getCreatedMetacards()) {
             File updatedMetacardFile = new File(rootBackupDir.getRoot().getAbsolutePath() + getMetacardPath(oldMetacard.getId(), subDirLevels) + oldMetacard.getId());
             Metacard updatedMetacard = readMetacard(updatedMetacardFile);
             assertThat(updatedMetacardFile.exists(), is(Boolean.TRUE));
@@ -306,11 +350,15 @@ public class CatalogBackupPluginTest {
         // Perform Test
         try {
             catalogBackupPlugin.process(mockUpdateResponse);
-        } catch(PluginExecutionException e) {
+            catalogBackupPlugin.threadPool.shutdown();
+            catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+        } catch (PluginExecutionException e) {
             // Verify
-            for(int i = 0; i < METACARD_IDS.length; i++) {
+            for (int i = 0; i < METACARD_IDS.length; i++) {
                 assertThat(e.getMessage(), containsString(METACARD_IDS[i]));
             }
+        } catch (InterruptedException e) {
+            // threads interrupted
         }
     }
 
@@ -329,8 +377,13 @@ public class CatalogBackupPluginTest {
 
         try {
             catalogBackupPlugin.process(mockCreateResponse);
-        } catch(PluginExecutionException e) {
+            catalogBackupPlugin.threadPool.shutdown();
+            catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+            catalogBackupPlugin.threadPool = Executors.newFixedThreadPool(10);
+        } catch (PluginExecutionException e) {
             fail();
+        } catch (InterruptedException e) {
+            // thread interrupted
         }
 
         UpdateResponse mockUpdateResponse = getUpdateResponse(Arrays.asList(METACARD_IDS));
@@ -338,11 +391,15 @@ public class CatalogBackupPluginTest {
         // Perform Test
         try {
             catalogBackupPlugin.process(mockUpdateResponse);
-        } catch(PluginExecutionException e) {
+            catalogBackupPlugin.threadPool.shutdown();
+            catalogBackupPlugin.threadPool.awaitTermination(5, TimeUnit.HOURS);
+        } catch (PluginExecutionException e) {
             // Verify
-            for(int i = 1; i < METACARD_IDS.length; i++) {
+            for (int i = 1; i < METACARD_IDS.length; i++) {
                 assertThat(e.getMessage(), containsString(METACARD_IDS[i]));
             }
+        } catch (InterruptedException e) {
+            // threads interrupted
         }
     }
 
@@ -352,7 +409,7 @@ public class CatalogBackupPluginTest {
 
     private CreateResponse getMockCreateResponse(List<String> metacardIds) {
         List<Metacard> createdMetacards = new ArrayList<Metacard>(metacardIds.size());
-        for(String metacardId : metacardIds) {
+        for (String metacardId : metacardIds) {
             Metacard metacard = getMetacard(metacardId, BASE_OLD_TITLE);
             createdMetacards.add(metacard);
         }
@@ -369,7 +426,7 @@ public class CatalogBackupPluginTest {
 
         List<Metacard> deletedMetacards = new ArrayList<Metacard>(metacardIds.size());
 
-        for(String metacardId : metacardIds) {
+        for (String metacardId : metacardIds) {
             Metacard mockMetacard = mock(Metacard.class);
             when(mockMetacard.getId()).thenReturn(metacardId);
             when(mockMetacard.getMetacardType()).thenReturn(mockMetacardType);
@@ -386,7 +443,7 @@ public class CatalogBackupPluginTest {
     private UpdateResponse getUpdateResponse(List<String> oldMetacardIds) {
         List<Update> updatedMetacards = new ArrayList<Update>(oldMetacardIds.size());
         int i = 0;
-        for(String oldMetacardId : oldMetacardIds) {
+        for (String oldMetacardId : oldMetacardIds) {
             Metacard oldMetacard = getMetacard(oldMetacardId, BASE_OLD_TITLE + i);
             Metacard newMetacard = getMetacard(oldMetacardId, BASE_NEW_TITLE + i);
 
@@ -416,10 +473,10 @@ public class CatalogBackupPluginTest {
     private String getMetacardPath(String metacardId, int subDirLevels) {
         StringBuilder builder = new StringBuilder();
 
-        if(subDirLevels < 0) {
+        if (subDirLevels < 0) {
             subDirLevels = 0;
-        } else if(metacardId.length() == 1 || metacardId.length() < subDirLevels * 2) {
-            subDirLevels = (int) Math.floor(metacardId.length()/2);
+        } else if (metacardId.length() == 1 || metacardId.length() < subDirLevels * 2) {
+            subDirLevels = (int) Math.floor(metacardId.length() / 2);
         }
 
         for (int i = 0; i < subDirLevels; i++) {
@@ -436,7 +493,7 @@ public class CatalogBackupPluginTest {
         Metacard metacard = null;
 
 
-        try(FileInputStream fis = new FileInputStream(file); ObjectInputStream ois = new ObjectInputStream(fis)) {
+        try (FileInputStream fis = new FileInputStream(file); ObjectInputStream ois = new ObjectInputStream(fis)) {
             metacard = (Metacard) ois.readObject();
         }
 

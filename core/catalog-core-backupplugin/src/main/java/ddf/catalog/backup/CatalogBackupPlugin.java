@@ -28,11 +28,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.ObjectOutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * The CatalogBackupPlugin backups up metacards to the file system.  It is a PostIngestPlugin, so it processes
@@ -51,11 +52,12 @@ public class CatalogBackupPlugin implements PostIngestPlugin {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CatalogBackupPlugin.class);
 
-    private static final String TEMP_FILE_EXTENSION = ".tmp";
+    private static final int DEFAULT_THREAD_COUNT = 1000;
 
     private File rootBackupDir;
-
     private int subDirLevels;
+    private int numThreads;
+    ExecutorService threadPool;
 
     private enum OPERATION {
         CREATE,
@@ -63,7 +65,10 @@ public class CatalogBackupPlugin implements PostIngestPlugin {
     };
 
     public CatalogBackupPlugin() {
+        rootBackupDir = null;
         subDirLevels = 0;
+        numThreads = DEFAULT_THREAD_COUNT;
+        threadPool = Executors.newFixedThreadPool(numThreads);
     }
 
     /**
@@ -78,23 +83,24 @@ public class CatalogBackupPlugin implements PostIngestPlugin {
     public CreateResponse process(CreateResponse input) throws PluginExecutionException {
         LOGGER.debug("Performing backup of metacards in CreateResponse.");
 
-        if(rootBackupDir == null) {
+        if (rootBackupDir == null) {
             throw new PluginExecutionException("No root backup directory configured.");
         }
 
-        List<String> errors = new ArrayList<String>();
+        List<String> errors = Collections.synchronizedList(new ArrayList<String>());
 
         List<Metacard> metacards = input.getCreatedMetacards();
 
-        for(Metacard metacard : metacards) {
+        for (Metacard metacard : metacards) {
             try {
-                backupMetacard(metacard);
-            } catch(IOException e) {
+                File metacardBackupFile = getBackupFile(metacard, rootBackupDir, subDirLevels);
+                threadPool.execute(new BackupMetacard(metacard, metacardBackupFile, errors));
+            } catch (IOException e) {
                 errors.add(metacard.getId());
             }
         }
 
-        if(errors.size() > 0) {
+        if (errors.size() > 0) {
             throw new PluginExecutionException(getExceptionMessage(CreateResponse.class.getSimpleName(), null, errors, OPERATION.CREATE));
         }
 
@@ -113,40 +119,50 @@ public class CatalogBackupPlugin implements PostIngestPlugin {
     public UpdateResponse process(UpdateResponse input) throws PluginExecutionException {
         LOGGER.debug("Updating metacards contained in UpdateResponse in backup.");
 
-        if(rootBackupDir == null) {
+        if (rootBackupDir == null) {
             throw new PluginExecutionException("No root backup directory configured.");
         }
 
-        List<String> deleteErrors = new ArrayList<String>();
-        List<String> backupErrors = new ArrayList<String>();
+        List<String> deleteErrors = Collections.synchronizedList(new ArrayList<String>());
+        List<String> backupErrors = Collections.synchronizedList(new ArrayList<String>());
 
         List<Update> updates = input.getUpdatedMetacards();
 
-        for (Update update : updates) {
-            try {
-                deleteMetacard(update.getOldMetacard());
-            } catch(IOException e) {
-                deleteErrors.add(update.getOldMetacard().getId());
-            }
+        String exceptionMessage = null;
 
+        for (Update update : updates) {
+            File backupFile = null;
             try {
-                backupMetacard(update.getNewMetacard());
+                backupFile = getBackupFile(update.getNewMetacard(), rootBackupDir, subDirLevels);
             } catch (IOException e) {
                 backupErrors.add(update.getNewMetacard().getId());
             }
+
+            File deleteFile = null;
+            try {
+                deleteFile = getBackupFile(update.getOldMetacard(), rootBackupDir, subDirLevels);
+                if(!deleteFile.exists()) {
+                    deleteFile = null;
+                    deleteErrors.add(update.getOldMetacard().getId());
+                }
+            } catch (IOException e) {
+                deleteErrors.add(update.getOldMetacard().getId());
+            }
+
+            if (null != backupFile && null != deleteFile) {
+                threadPool.execute(new UpdateMetacard(update, backupFile, deleteFile, deleteErrors, backupErrors));
+            }
         }
 
-        String exceptionMessage = null;
-
-        if(deleteErrors.size() > 0) {
+        if (deleteErrors.size() > 0) {
             exceptionMessage = getExceptionMessage(UpdateResponse.class.getSimpleName(), exceptionMessage, deleteErrors, OPERATION.DELETE);
         }
 
-        if(backupErrors.size() > 0) {
+        if (backupErrors.size() > 0) {
             exceptionMessage = getExceptionMessage(UpdateResponse.class.getSimpleName(), exceptionMessage, backupErrors, OPERATION.CREATE);
         }
 
-        if(deleteErrors.size() > 0 || backupErrors.size() > 0) {
+        if (deleteErrors.size() > 0 || backupErrors.size() > 0) {
             throw new PluginExecutionException(exceptionMessage);
         }
 
@@ -164,23 +180,24 @@ public class CatalogBackupPlugin implements PostIngestPlugin {
     public DeleteResponse process(DeleteResponse input) throws PluginExecutionException {
         LOGGER.debug("Deleting metacards contained in DeleteResponse from backup.");
 
-        if(rootBackupDir == null) {
+        if (rootBackupDir == null) {
             throw new PluginExecutionException("No root backup directory configured.");
         }
 
-        List<String> errors = new ArrayList<String>();
+        List<String> errors = Collections.synchronizedList(new ArrayList<String>());
 
         List<Metacard> metacards = input.getDeletedMetacards();
 
-        for(Metacard metacard : metacards) {
+        for (Metacard metacard : metacards) {
             try {
-                deleteMetacard(metacard);
-            } catch(IOException e) {
+                File metacardToDelete = getBackupFile(metacard, rootBackupDir, subDirLevels);
+                threadPool.execute(new DeleteMetacard(metacard, metacardToDelete, errors));
+            } catch (IOException e) {
                 errors.add(metacard.getId());
             }
         }
 
-        if(errors.size() > 0) {
+        if (errors.size() > 0) {
             throw new PluginExecutionException(getExceptionMessage(DeleteResponse.class.getSimpleName(), null, errors, OPERATION.DELETE));
         }
 
@@ -213,75 +230,14 @@ public class CatalogBackupPlugin implements PostIngestPlugin {
         LOGGER.debug("Set subdirectory levels to: {}", this.subDirLevels);
     }
 
-    private void backupMetacard(Metacard metacard) throws IOException {
-
-        // Write metacard to a temp file.  When write is complete, rename (remove temp extension).
-        File tempFile = getTempFile(metacard);
-
-        try(ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(tempFile))) {
-            LOGGER.debug("Writing temp metacard [{}] to [{}].", tempFile.getName(), tempFile.getParent());
-            oos.writeObject(new MetacardImpl(metacard));
-        }
-
-        removeTempExtension(tempFile);
-    }
-
     /**
-     * Deletes metacard from file system backup.
+     * Sets the number of threads that should be used for processing.
      *
-     * @param metacard the metacard to be deleted.
-     *
-     * @throws IOException
+     * @param threads Number of threads to use
      */
-    private void deleteMetacard(Metacard metacard) throws IOException {
-        File metacardToDelete = getBackupFile(metacard);
-        FileUtils.forceDelete(metacardToDelete);
-    }
-
-    /**
-     * While metacards are being written to the file system for backup, they are written to temp files. Each temp file is renamed
-     * when the write is complete. This makes it easy to find and remove failed files.
-     *
-     * @param metacard the metacard to create a temp file for.
-     * @return
-     * @throws IOException
-     */
-    private File getTempFile(Metacard metacard) throws IOException {
-        return new File(getBackupFile(metacard).getAbsolutePath() + TEMP_FILE_EXTENSION);
-    }
-
-    private File getBackupFile(Metacard metacard) throws IOException {
-
-        String metacardId = metacard.getId();
-        File parent = rootBackupDir;
-        int levels = this.subDirLevels;
-
-        if(this.subDirLevels < 0) {
-            levels = 0;
-        } else if (metacardId.length() == 1 || metacardId.length() < this.subDirLevels * 2) {
-            levels = (int) Math.floor(metacardId.length()/2);
-        }
-
-        for (int i = 0; i < levels; i++) {
-            parent = new File(parent, metacardId.substring(i * 2, i * 2 + 2));
-            FileUtils.forceMkdir(parent);
-        }
-
-        LOGGER.debug("Backup directory for metacard  [{}] is [{}].", metacard.getId(), parent.getAbsolutePath());
-        return new File(parent, metacardId);
-    }
-
-    /**
-     * Removed the temp file extension off of the backed up metacard.
-     *
-     * @param source the backed up metacard file in which the temp file extension is to be removed.
-     * @throws IOException
-     */
-    private void removeTempExtension(File source) throws IOException {
-        LOGGER.debug("Removing {} file extension.", TEMP_FILE_EXTENSION);
-        File destination = new File(StringUtils.removeEnd(source.getAbsolutePath(), TEMP_FILE_EXTENSION));
-        FileUtils.moveFile(source, destination);
-        LOGGER.debug("Moved {} to {}.", source.getAbsolutePath(), destination.getAbsolutePath());
+    public void setNumThreads(int threads) {
+        this.numThreads = threads;
+        LOGGER.debug("Set number of threads to: {}", this.numThreads);
     }
 
     /**
@@ -294,7 +250,7 @@ public class CatalogBackupPlugin implements PostIngestPlugin {
     private String getExceptionMessage(String responseType, String previousExceptionMessage, List<String> metacardsIdsInError, OPERATION operation) {
         StringBuilder builder = new StringBuilder();
 
-        if(StringUtils.isNotBlank(previousExceptionMessage)) {
+        if (StringUtils.isNotBlank(previousExceptionMessage)) {
             builder.append(previousExceptionMessage);
             builder.append(" ");
         }
@@ -304,19 +260,41 @@ public class CatalogBackupPlugin implements PostIngestPlugin {
         builder.append(". ");
 
         switch (operation) {
-            case CREATE:
-                builder.append("Unable to backup metacard(s) [");
-                builder.append(StringUtils.join(metacardsIdsInError, ","));
-                builder.append("]. ");
-                break;
-            case DELETE:
-                builder.append("Unable to delete metacard(s) [");
-                builder.append(StringUtils.join(metacardsIdsInError, ","));
-                builder.append("] from backup. ");
-                break;
-
+        case CREATE:
+            builder.append("Unable to backup metacard(s) [");
+            builder.append(StringUtils.join(metacardsIdsInError, ","));
+            builder.append("]. ");
+            break;
+        case DELETE:
+            builder.append("Unable to delete metacard(s) [");
+            builder.append(StringUtils.join(metacardsIdsInError, ","));
+            builder.append("] from backup. ");
+            break;
+        default:
+            // Unsupported operation
+            break;
         }
         return builder.toString();
     }
 
+    private File getBackupFile(Metacard metacard, File backupDirectory, int subDirectoryLevels) throws IOException {
+
+        String metacardId = metacard.getId();
+        File parent = backupDirectory;
+        int levels = subDirectoryLevels;
+
+        if (subDirectoryLevels < 0) {
+            levels = 0;
+        } else if (metacardId.length() == 1 || metacardId.length() < subDirectoryLevels * 2) {
+            levels = (int) Math.floor(metacardId.length() / 2);
+        }
+
+        for (int i = 0; i < levels; i++) {
+            parent = new File(parent, metacardId.substring(i * 2, i * 2 + 2));
+            FileUtils.forceMkdir(parent);
+        }
+
+        LOGGER.debug("Backup directory for metacard  [{}] is [{}].", metacard.getId(), parent.getAbsolutePath());
+        return new File(parent, metacardId);
+    }
 }
